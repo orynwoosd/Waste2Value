@@ -9,6 +9,13 @@ from typing import Annotated, List
 from sqlalchemy.ext.asyncio import AsyncSession
 import models
 from sqlalchemy import select, func 
+from fastapi.security import OAuth2PasswordRequestForm
+from auth import hash_password, authenticate_user, create_access_token
+import jwt 
+from datetime import datetime, timedelta
+from config import settings
+from fastapi.responses import JSONResponse
+from dependecies import CurrentUser
 
 
 @asynccontextmanager
@@ -61,10 +68,11 @@ async def register_user(user_info: CreateUserValidation, db: Annotated[AsyncSess
     if existing_phonenumber:
         raise raise_exception("phone_number already exist ")
 
+    hashed_password = hash_password(user_info.password)
     new_user = models.User(
         username=user_info.username,
         email=user_info.email,
-        password=user_info.password,
+        password=hashed_password,
         phonenumber=user_info.phonenumber
 
     )
@@ -178,3 +186,59 @@ async def get_all_users(db: Annotated[AsyncSession, Depends(get_db)]):
     users = result.scalars().all()
 
     return users
+
+@app.post("/token")
+async def login_for_token(
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+
+    user = await authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Incorrect username or password ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+
+    access_token = create_access_token(
+        data={"sub": user.phonenumber}, expire_delta=access_token_expires
+    )
+
+    response = JSONResponse(
+        {"access_token": access_token, "token_type": "bearer"}
+    )
+
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.access_token_expire_minutes * 60,
+    )
+
+    return response
+
+
+@app.get("/me", response_model=UserPrivateResponse)
+async def get_current_user(current_user: CurrentUser):
+    """Get the currently authenticated user."""
+    return current_user
+
+@app.post("/logout")
+async def logout():
+    response = JSONResponse(
+        {"status": "logged_out"}
+    )
+
+    response.delete_cookie(
+        key="access_token",
+        httponly=True,
+        samesite="lax",
+    )
+
+    return response
+
+
