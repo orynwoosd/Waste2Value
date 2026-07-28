@@ -1,75 +1,57 @@
-# React + TypeScript + Vite
+# Waste2Value
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Waste2Value is a web-based domestic waste recovery system designed to improve waste management in Yaoundé VI Municipality.
 
-Currently, two official plugins are available:
+The platform connects households, waste collectors, and recycling centers through a digital ecosystem that simplifies waste collection, promotes waste segregation, rewards environmentally responsible behavior, and supports the sale of recycled products.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Features
 
-## React Compiler
+### Household Module
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- User registration and authentication
+- Manage household profile and address
+- Schedule waste pickup requests
+- Specify waste type and quantity
+- Track pickup status
+- Receive notifications
+- Earn rewards for proper waste segregation
+- Purchase recycled products
 
-## Expanding the ESLint configuration
+### Waste Collector Module
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- View assigned collection requests
+- Accept and manage pickups
+- Update collection status
+- Track collection history
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### Recycling Center Module
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+- Manage collected waste
+- Process recyclable materials
+- Add recycled products to marketplace
+- Monitor recycling activities
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### Admin Module
 
-```
+- Manage users and system activities
+- Monitor waste collection operations
+- Generate reports
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Technologies Used
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+### Frontend
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+- React + TypeScript
+- Vite
+- Tailwind CSS
 
-```
+### Backend
+
+- Node.js
+- Express.js
+
+### Database
+
+- PostgreSQL
+
+## Project Structure
