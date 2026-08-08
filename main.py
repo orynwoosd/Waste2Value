@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, status, Depends, HTTPException
+from fastapi import FastAPI, status, Depends, HTTPException, File, UploadFile
 from database import engine, get_db
 from schemas import (
     UserPrivateResponse, CreateUserValidation,
@@ -16,7 +16,13 @@ from datetime import datetime, timedelta
 from config import settings
 from fastapi.responses import JSONResponse
 from dependecies import CurrentUser
+from fastapi.middleware.cors import CORSMiddleware
+from forms import AddressForm
+from PIL import UnidentifiedImageError
+from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
+from image_utils import process_image
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -29,7 +35,18 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(lifespan=lifespan) 
 
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # adjust to your React port
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/media", StaticFiles(directory="media"), name="media")
 @app.get("/")
+
 async def home():
     return {"WLCM": "wlcm"}
 
@@ -43,13 +60,13 @@ async def register_user(user_info: CreateUserValidation, db: Annotated[AsyncSess
             detail=details
         )
     
-    result = await db.execute(
-        select(models.User).where(func.lower(models.User.username) == user_info.username.lower())
-    )
+    # result = await db.execute(
+    #     select(models.User).where(func.lower(models.User.username) == user_info.username.lower())
+    # )
 
-    existing_user = result.scalars().first()
-    if existing_user:
-        raise raise_exception("username already exist")
+    # existing_user = result.scalars().first()
+    # if existing_user:
+    #     raise raise_exception("username already exist")
 
     result = await db.execute(
         select(models.User).where(func.lower(models.User.email) == user_info.email.lower())
@@ -70,7 +87,8 @@ async def register_user(user_info: CreateUserValidation, db: Annotated[AsyncSess
 
     hashed_password = hash_password(user_info.password)
     new_user = models.User(
-        username=user_info.username,
+        firstname=user_info.firstname,
+        lastname=user_info.lastname,
         email=user_info.email,
         password=hashed_password,
         phonenumber=user_info.phonenumber
@@ -80,8 +98,76 @@ async def register_user(user_info: CreateUserValidation, db: Annotated[AsyncSess
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
+
+    # Dopting the function, so i get current user for next step 
+    # of authentication process.
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = create_access_token(
+        data={"sub": new_user.phonenumber},
+        expire_delta=access_token_expires,
+
+    )
+   # Build response with token in cookie (same pattern as /token)
+    response = JSONResponse(
+        content={
+            "user": UserPrivateResponse.model_validate(new_user).model_dump(),
+            "token_type": "bearer",
+            # "token": acc
+            # Optionally include token in body too, but cookie is the main auth mechanism
+            # "access_token": access_token,  # only if you really need it in JSON as well
+        }
+    )
+
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.access_token_expire_minutes * 60,
+    )
+
+    return response
+
     return new_user
 
+@app.post("/users/address")
+async def add_user_address(
+     current_user: CurrentUser,
+    address: AddressForm = Depends(AddressForm.as_form),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    
+): 
+  
+    file_content = await file.read()
+
+    if len(file_content) > settings.max_upload_file_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Maximum size is {settings.max_upload_file_size_bytes}"
+        )
+
+    try:
+        new_file = await run_in_threadpool(process_image, file_content, "lm")
+    except UnidentifiedImageError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid image file. Please upload a valid image (JPEG, PNG, GIF, WebP)."
+        ) from err
+
+    user_new_address = models.AddressData(
+        inhabitant_id=current_user.id,
+        **address.model_dump()
+    )
+    user_new_address.image_file = new_file
+    db.add(user_new_address)
+    await db.commit()
+    await db.refresh(user_new_address)
+
+    # only register page has been built so nothing 
+    return user_new_address
+    
+    
 
 @app.patch("/users/{user_id}", response_model=UserPrivateResponse)
 async def update_user(user_id: int, user_info: UpdateUser, db: Annotated[AsyncSession, Depends(get_db)]):
@@ -110,13 +196,13 @@ async def update_user(user_id: int, user_info: UpdateUser, db: Annotated[AsyncSe
 
     
 
-    if user_info.username is not None and user_info.username.lower() != user.username:
-        result = await db.execute(
-            select(models.User).where(func.lower(models.User.username) == user_info.username.lower())
-        )
-        existing_username = result.scalars().first()
-        if existing_username:
-            raise raise_exception("Username already exist ")
+    # if user_info.username is not None and user_info.username.lower() != user.username:
+    #     result = await db.execute(
+    #         select(models.User).where(func.lower(models.User.username) == user_info.username.lower())
+    #     )
+    #     existing_username = result.scalars().first()
+    #     if existing_username:
+    #         raise raise_exception("Username already exist ")
 
     if user_info.email is not None and user_info.email != user.email:
         result = await db.execute(
@@ -136,8 +222,8 @@ async def update_user(user_id: int, user_info: UpdateUser, db: Annotated[AsyncSe
         if existing_phonenumber:
             raise raise_exception("Phone number already registered")
 
-    if user_info.username is not None:
-        user.username = user_info.username
+    # if user_info.username is not None:
+    #     user.username = user_info.username
     
     if user_info.email is not None:
         user.email = user_info.email
@@ -223,7 +309,7 @@ async def login_for_token(
 
 
 @app.get("/me", response_model=UserPrivateResponse)
-async def get_current_user(current_user: CurrentUser):
+async def get_current_user(current_user: CurrentUser ):
     """Get the currently authenticated user."""
     return current_user
 
@@ -242,3 +328,4 @@ async def logout():
     return response
 
 
+ 

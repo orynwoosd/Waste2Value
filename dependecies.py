@@ -7,17 +7,25 @@ from auth import decode_access_token
 import models
 from sqlalchemy import select, func
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
+# oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
 
 async def get_current_user(
         request: Request,
         db: Annotated[AsyncSession, Depends(get_db)],
-        token: Annotated[str | None, Security(oauth2_scheme)] = None,
+        # token: Annotated[str | None, Security(oauth2_scheme)] = None,
 ) -> models.User:
     
-    if token is None:
-        token = request.cookies.get("access_token")
+    # if token is None:
+    token = request.cookies.get("access_token")
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated: missing access_token cookie",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
 
     if token and token.startswith("Bearer "):
         token = token[7:]
@@ -62,3 +70,10 @@ async def get_current_user(
     return user 
 
 CurrentUser = Annotated[models.User, Depends(get_current_user)]
+
+
+
+# const res = await fetch("/me", {
+#   method: "GET",
+#   credentials: "include",  // This tells browser to send cookies
+# });
