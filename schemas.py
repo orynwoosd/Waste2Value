@@ -10,10 +10,30 @@ from enum import Enum
 
 
 class UserRole(int, Enum):
+    """Permission levels available to users of the Waste2Value platform."""
+
+    # A normal site user who can manage their own account and addresses.
     REGULAR = 1
+
+    # An operational worker, such as a waste-collection driver.
     ADMIN = 2
+
+    # A trusted supervisor who can manage operational activities.
     SUPER_USER = 3
+
+    # The site owner or highest-trust administrator.
     MEGA_USER = 4
+
+    @property
+    def description(self) -> str:
+        """Return a human-readable explanation of this permission level."""
+        descriptions = {
+            UserRole.REGULAR: "Regular user who manages their own account and addresses.",
+            UserRole.ADMIN: "Operational worker, such as a waste-collection driver.",
+            UserRole.SUPER_USER: "Trusted supervisor who manages operational activities.",
+            UserRole.MEGA_USER: "Site owner with the highest level of administrative access.",
+        }
+        return descriptions[self]
 
 class BaseUserValidation(BaseModel):
     firstname: str =Field(min_length=1, max_length=100)
