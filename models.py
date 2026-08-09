@@ -1,10 +1,9 @@
 from sqlalchemy.orm import mapped_column, Mapped, relationship
-from sqlalchemy import func, Boolean, String, Integer, text, ForeignKey
+from sqlalchemy import String, Integer, text, ForeignKey, Enum as DBEnum
 from datetime import datetime
 from sqlalchemy.sql.sqltypes import TIMESTAMP
 from database import Base
-
-
+from schemas import UserRole
 
 class User(Base):
     """
@@ -26,6 +25,11 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text('now()'), nullable=False)
     image_file: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
     address_data = relationship("AddressData", back_populates="inhabitant")
+    role: Mapped[UserRole] = mapped_column(
+        DBEnum(UserRole, name="userrole"),
+        default=UserRole.REGULAR,
+        server_default=UserRole.REGULAR.name,
+    )
 
     @property
     def image_path(self) -> str:
@@ -39,7 +43,7 @@ class AddressData(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
     quater: Mapped[int] = mapped_column(String(100), nullable=False)
     street_address: Mapped[str] = mapped_column(String(100), nullable=True)
-    Nearest_landmark: Mapped[str] = mapped_column(String(100), nullable=True)
+    nearest_landmark: Mapped[str] = mapped_column(String(100), nullable=True)
     inhabitant_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     inhabitant = relationship(User, back_populates="address_data")
     image_file: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)

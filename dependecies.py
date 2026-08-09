@@ -72,8 +72,14 @@ async def get_current_user(
 CurrentUser = Annotated[models.User, Depends(get_current_user)]
 
 
+def required_permission_level(level: int):
+    async def check_permission(current_user: CurrentUser):
+        """Check that the current user has the required permission level."""
+        if current_user.role.value < level:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permission"
+            )
+        return current_user
 
-# const res = await fetch("/me", {
-#   method: "GET",
-#   credentials: "include",  // This tells browser to send cookies
-# });
+    return check_permission

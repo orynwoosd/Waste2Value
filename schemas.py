@@ -4,8 +4,16 @@ from pydantic import (
         Field, # Allows defining certain constraints.
         EmailStr
       )
+from typing import Annotated
 
-from datetime import datetime
+from enum import Enum
+
+
+class UserRole(int, Enum):
+    REGULAR = 1
+    ADMIN = 2
+    SUPER_USER = 3
+    MEGA_USER = 4
 
 class BaseUserValidation(BaseModel):
     firstname: str =Field(min_length=1, max_length=100)
@@ -25,6 +33,8 @@ class UserPublicResponse(BaseModel):
     firstname: str
     image_file: str | None
     image_path: str
+    role: UserRole = Field(default=UserRole.REGULAR)
+    
 
 class UserPrivateResponse(UserPublicResponse):
     # model_config = ConfigDict(from_attributes=True)
@@ -34,3 +44,14 @@ class UserPrivateResponse(UserPublicResponse):
 class UpdateUser(BaseModel):
     email: EmailStr | None = Field(default=None, max_length=120)
     phonenumber: str | None = Field(default=None, max_length=20, min_length=9)
+
+
+class AddressResponse(BaseModel):
+    id: int
+    quater: str
+    street_address: str
+    Nearest_landmark: str
+    inhabitant: UserPrivateResponse
+
+    model_config = ConfigDict(from_attributes=True)
+
