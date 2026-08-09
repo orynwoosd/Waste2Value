@@ -133,6 +133,15 @@ async def add_user_address(
     db: AsyncSession = Depends(get_db),
     
 ): 
+    result = await db.execute(
+        select(models.AddressData).options(joinedload(models.AddressData.inhabitant)).where(models.AddressData.inhabitant_id == current_user.id)
+    )
+    existing_address = result.scalars().first()
+    if existing_address:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You already have and address."
+        )
   
     file_content = await file.read()
 

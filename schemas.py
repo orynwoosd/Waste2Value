@@ -49,8 +49,8 @@ class UpdateUser(BaseModel):
 class AddressResponse(BaseModel):
     id: int
     quater: str
-    street_address: str
-    Nearest_landmark: str
+    street_address: str | None
+    nearest_landmark: str | None
     inhabitant: UserPrivateResponse
 
     model_config = ConfigDict(from_attributes=True)
