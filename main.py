@@ -17,11 +17,19 @@ from fastapi.responses import JSONResponse
 from dependecies import CurrentUser, required_permission_level
 from fastapi.middleware.cors import CORSMiddleware
 from forms import AddressForm
+from forms import PickupForm
 from PIL import UnidentifiedImageError
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import joinedload
 from image_utils import process_image, delete_img
+from schemas import (
+    CreatePickupValidation,
+    PickupResponse,
+    WasteCategoryResponse,
+    WasteResponse
+)
+from datetime import date as _date
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -159,7 +167,8 @@ async def add_user_address(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid image file. Please upload a valid image (JPEG, PNG, GIF, WebP)."
         ) from err
-    
+    # debug: show parsed form fields (avoid unpacking into print)
+    print(address.model_dump())
     user_new_address = models.AddressData(
         inhabitant_id=current_user.id,
         **address.model_dump()
@@ -261,15 +270,15 @@ async def delete_user(user_id: int, current_user: CurrentUser, db: Annotated[Asy
 @app.get("/users", response_model=List[UserPrivateResponse], description='This route needs MEGA_USER status to access.')
 async def get_all_users(
     db: Annotated[AsyncSession, Depends(get_db)], 
-    # current_user: Annotated[
-    #     models.User,
-        # Depends(required_permission_level(UserRole.MEGA_USER.value))
-    # ]
+    current_user: Annotated[
+        models.User,
+        Depends(required_permission_level(UserRole.MEGA_USER.value))
+    ]
     ):
     result = await db.execute(
         select(models.User)
     )
-
+ 
     users = result.scalars().all()
 
     return users
@@ -282,6 +291,118 @@ async def get_all_addresses(db: Annotated[AsyncSession, Depends(get_db)]):
 
     addresses = result.scalars().all()
     return addresses
+
+
+@app.get("/waste/categories", response_model=List[WasteCategoryResponse])
+async def list_waste_categories(db: Annotated[AsyncSession, Depends(get_db)]):
+    """List available waste categories for the frontend selector.
+
+    This returns the canonical categories seeded by migrations.
+    """
+    result = await db.execute(select(models.WasteCategory).order_by(models.WasteCategory.id))
+    rows = result.scalars().all()
+    return rows
+
+@app.get("/waste", response_model=List[WasteResponse])
+async def list_waste(db: Annotated[AsyncSession, Depends(get_db)]):
+    """List all waste available"""
+    result = await db.execute(
+        select(models.Waste).options(
+            joinedload(models.Waste.category),
+            joinedload(models.Waste.producer),
+        )
+    )
+    wastes = result.scalars().all()
+    return wastes
+
+@app.get("/pickups", response_model=List[PickupResponse], status_code=status.HTTP_200_OK)
+async def get_pickups(db: Annotated[AsyncSession, Depends(get_db)]):
+    """Get all schedulled pickups."""
+    result = await db.execute(
+        select(models.Pickup).options(joinedload(models.Pickup.waste).joinedload(models.Waste.category))
+    )
+    pickups = result.scalars().all()
+    return pickups
+    
+
+@app.post("/pickups", response_model=PickupResponse, status_code=status.HTTP_201_CREATED)
+async def create_pickup(
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    form: PickupForm = Depends(PickupForm.as_form),
+    file: UploadFile | None = File(None),
+):
+    """Create a pickup request from the frontend form.
+
+    Workflow:
+    - validate category exists
+    - create a `Waste` row owned by the requester
+    - process the optional image and attach filename
+    - create a `Pickup` row referencing the waste item
+    """
+    # validate category: accept either numeric id or case-insensitive name
+    cat_val = form.category_id
+    category = None
+    if isinstance(cat_val, int) or (isinstance(cat_val, str) and cat_val.isdigit()):
+        try:
+            cid = int(cat_val)
+        except (TypeError, ValueError):
+            cid = None
+        if cid is not None:
+            category = (await db.execute(
+                select(models.WasteCategory).where(models.WasteCategory.id == cid)
+            )).scalars().first()
+    if category is None and isinstance(cat_val, str):
+        category = (await db.execute(
+            select(models.WasteCategory).where(func.lower(models.WasteCategory.name) == cat_val.lower())
+        )).scalars().first()
+
+    if not category:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid category")
+
+    # create waste item owned by current user
+    new_waste = models.Waste(category_id=category.id, producer_id=current_user.id)
+    db.add(new_waste)
+    await db.flush()  # populate new_waste.id
+
+    # handle optional image upload
+    image_filename = None
+    if file is not None:
+        file_content = await file.read()
+        if len(file_content) > settings.max_upload_file_size_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File too large")
+        try:
+            image_filename = await run_in_threadpool(process_image, file_content, "pk")
+        except UnidentifiedImageError as err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image file") from err
+
+    # create pickup record
+    pickup = models.Pickup(
+        waste_id=new_waste.id,
+        requester_id=current_user.id,
+        courier_id=None,
+        pickup_date=_date.fromisoformat(form.pickup_date) if isinstance(form.pickup_date, str) else form.pickup_date,
+        time_slot=models.PickupTimeSlot(form.time_slot),
+        image_file=image_filename,
+    )
+    db.add(pickup)
+    await db.commit()
+
+    # Refresh and re-query with relationships eagerly loaded. In async
+    # SQLAlchemy, accessing lazy relationships during FastAPI response
+    # validation triggers IO which isn't allowed from the serialization
+    # thread — so ensure related objects are loaded here.
+    await db.refresh(pickup)
+    result = await db.execute(
+        select(models.Pickup)
+        .options(
+            joinedload(models.Pickup.waste).joinedload(models.Waste.category),
+        )
+        .where(models.Pickup.id == pickup.id)
+    )
+    pickup_with_rels = result.scalars().first()
+
+    return pickup_with_rels
 
 
 @app.post("/token")
@@ -339,4 +460,5 @@ async def logout():
     return response
 
 
+### legacy: older pickup route removed — use POST /pickups instead.
  

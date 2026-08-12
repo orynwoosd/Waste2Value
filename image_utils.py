@@ -6,10 +6,12 @@ from PIL import Image, ImageOps
 
 PROFILE_PICS_DIR = Path("media/profile_imgs")
 LANDMARK_PICS_DIR = Path("media/landmark_imgs")
+LANDMARK_PICS_DIR = Path("media/pickup_imgs")
 
 CHOSEN_PATH = {
     "pf": {"dir": PROFILE_PICS_DIR, "dimension": (300, 300)},
-    "lm": {"dir": LANDMARK_PICS_DIR, "dimension": (800, 600)}
+    "lm": {"dir": LANDMARK_PICS_DIR, "dimension": (800, 600)},
+    "pk": {"dir": LANDMARK_PICS_DIR, "dimension": (800, 600)}
 }
 # Image processing
 def process_image(content: bytes, type: str) -> str:

@@ -7,6 +7,8 @@ from pydantic import (
 from typing import Annotated
 
 from enum import Enum
+from datetime import date, datetime
+import uuid
 
 
 class UserRole(int, Enum):
@@ -74,4 +76,51 @@ class AddressResponse(BaseModel):
     inhabitant: UserPrivateResponse
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WasteCategoryResponse(BaseModel):
+    """Response model for a waste category."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+
+
+class WasteResponse(BaseModel):
+    """Response model for a waste item."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    category: WasteCategoryResponse
+    producer_id: int
+
+
+class CreatePickupValidation(BaseModel):
+    """Validation model for creating a pickup from form fields.
+
+    The frontend submits category, date and time-slot; an optional image
+    may be uploaded separately.
+    """
+
+    # Accept either the numeric id of the category or the category name.
+    category_id: int | str
+    pickup_date: date
+    time_slot: str
+
+
+class PickupResponse(BaseModel):
+    """Response model for a pickup request."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    waste: WasteResponse
+    requester_id: int
+    courier_id: int | None
+    pickup_date: date
+    time_slot: str
+    status: int
+    image_file: str | None
+    created_at: datetime
+    pickup_id: uuid.UUID
+    
 
