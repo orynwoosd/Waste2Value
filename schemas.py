@@ -1,10 +1,10 @@
+from typing import Any
 from pydantic import (
     BaseModel, # Base class all models inherit
       ConfigDict,  # Modern model configuration
         Field, # Allows defining certain constraints.
         EmailStr
       )
-from typing import Annotated
 
 from enum import Enum
 from datetime import date, datetime
@@ -123,4 +123,69 @@ class PickupResponse(BaseModel):
     created_at: datetime
     pickup_id: uuid.UUID
     
+
+
+class RoleChangeRequestCreate(BaseModel):
+    """Client payload when requesting a role change."""
+
+    requested_role: UserRole
+
+
+class RoleChangeRequestResponse(BaseModel):
+    """Public response model for a RoleChangeRequest."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    user_id: int
+    requested_role: UserRole
+    status: str
+    document_filename: str | None
+    admin_id: int | None
+    admin_notes: str | None
+    created_at: datetime
+    reviewed_at: datetime | None
+    user: UserPrivateResponse
+
+
+class AuditLogResponse(BaseModel):
+    """Response model for an audit log entry."""
+
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    actor_id: int
+    target_user_id: int | None
+    action: str
+    details: str | None
+    created_at: datetime
+
+
+class ProfileType(str, Enum):
+    INDIVIDUAL = "individual"
+    BUSINESS = "business"
+    ORGANIZATION = "organization"
+    COMMUNITY = "community"
+
+
+class UserProfile(BaseModel):
+    """Represents a flexible user profile. Common fields live here; extra
+    attributes can be stored in metadata for business and organisation users."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int | None = None
+    user_id: int
+    profile_type: ProfileType = ProfileType.INDIVIDUAL
+    display_name: str | None = None
+    profession: str | None = None
+    company_name: str | None = None
+    website: str | None = None
+    logo: str | None = None
+    biography: str | None = None
+    profile_data: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+class UserProfileResponse(UserProfile):
+    model_config = ConfigDict(from_attributes=True)
+    profile_owner: UserPrivateResponse | None = None
 

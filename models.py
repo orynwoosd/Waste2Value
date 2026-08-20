@@ -1,11 +1,12 @@
+from typing import Any
 from sqlalchemy.orm import mapped_column, Mapped, relationship
-from sqlalchemy import Date, String, Integer, text, ForeignKey, Enum as DBEnum
+from sqlalchemy import Date, String, Integer, text, ForeignKey, Enum as DBEnum, Text, JSON
 from datetime import date, datetime
 from enum import Enum
 from sqlalchemy.sql.sqltypes import TIMESTAMP
 from database import Base
 from schemas import UserRole
-
+import bleach
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 
@@ -36,7 +37,27 @@ class User(Base):
     )
 
     # Relationship to wastes produced by this user
-    wastes: Mapped[list["Waste"]] = relationship("Waste", back_populates="producer")
+    wastes: Mapped[list["Waste"]] = relationship(
+        "Waste", back_populates="producer",
+        cascade="all, delete-orphan",
+        foreign_keys="[Waste.producer_id]"
+        )
+
+    # Role change requests submitted by this user (one-to-many)
+    role_change_requests: Mapped[list["RoleChangeRequest"]] = relationship(
+        "RoleChangeRequest",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="[RoleChangeRequest.user_id]"
+    )
+
+    # Audit logs where this user acted as the actor
+    audit_logs: Mapped[list["AuditLog"]] = relationship(
+        "AuditLog",
+        back_populates="actor",
+        foreign_keys="[AuditLog.actor_id]",
+        cascade="all, delete-orphan",
+    )
 
     # There are two FK paths between `users` and `pickups` (requester_id and
     # courier_id). Explicitly declare which foreign key each relationship
@@ -52,11 +73,29 @@ class User(Base):
         foreign_keys="[Pickup.courier_id]",
     )
 
+    profile: Mapped["Profile | None"] = relationship(
+        "Profile",
+        back_populates="profile_owner",
+        uselist=False,
+        cascade="all, delete-orphan",
+        foreign_keys="[Profile.user_id]"
+    )
+
     @property
     def image_path(self) -> str:
         if self.image_file:
             return f"/media/profile_imgs/{self.image_file}"
         return "/static/profile_pics/default.jpg"
+
+    def create_profile(self) -> "Profile":
+        """Create the default profile associated with this user."""
+        profile = Profile(
+            profile_owner=self,
+            profile_type=ProfileType.INDIVIDUAL,
+            profile_data={},
+        )
+        self.profile = profile
+        return profile
 
 
 class AddressData(Base):
@@ -172,6 +211,140 @@ class Pickup(Base):
         foreign_keys=[courier_id], back_populates="courier_orders"
     )
 
+    @property
+    def image_path(self) -> str:
+        if self.image_file:
+            return f"/media/profile_imgs/{self.image_file}"
+        return "/static/profile_pics/default.jpg"
+
+
+
+class RoleRequestStatus(str, Enum):
+    """Status values for role change requests."""
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class RoleChangeRequest(Base):
+    """A request submitted by a user asking the administrators to change their role.
+
+    Fields:
+    - `user_id`: the requesting user
+    - `requested_role`: the role the user is requesting
+    - `status`: current state of the request (PENDING/APPROVED/REJECTED)
+    - `document_filename`: optional supporting document (e.g., business registration)
+    - `admin_id`: the admin who reviewed the request
+    - `admin_notes`: optional notes recorded by the reviewing admin
+    - timestamps for creation and review
+    """
+
+    __tablename__ = "role_change_requests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    requested_role: Mapped[UserRole] = mapped_column(DBEnum(UserRole, name="userrole"), nullable=False)
+    status: Mapped[RoleRequestStatus] = mapped_column(DBEnum(RoleRequestStatus, name="rolerequeststatus"), nullable=False, server_default=RoleRequestStatus.PENDING.value)
+    document_filename: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    admin_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    admin_notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship("User", back_populates="role_change_requests", foreign_keys=[user_id])
+    admin = relationship("User", foreign_keys=[admin_id])
+
+    @property
+    def image_path(self) -> str:
+        if self.document_filename:
+            return f"/media/profile_imgs/{self.document_filename}"
+        return "/static/profile_pics/default.jpg"
+    
+
+
+class AuditLog(Base):
+    """Simple audit trail of important actions performed by users/admins.
+
+    We write entries when admin approves/rejects a role request so there is
+    an immutable record of who did what and when.
+    """
+
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    target_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    action: Mapped[str] = mapped_column(String(200), nullable=False)
+    details: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False)
+
+    actor = relationship("User", back_populates="audit_logs", foreign_keys=[actor_id])
+    target_user = relationship("User", foreign_keys=[target_user_id])
+
+
+class ProfileType(str, Enum):
+    """Type of user profile carried by the account."""
+
+    INDIVIDUAL = "individual"
+    BUSINESS = "business"
+    ORGANIZATION = "organization"
+    COMMUNITY = "community"
+
+
+class Profile(Base):
+    """User profile that stores both fixed fields and flexible profile metadata."""
+
+    __tablename__ = "profiles"
+
+    id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False)
+
+    profile_type: Mapped[ProfileType] = mapped_column(
+        DBEnum(
+            ProfileType,
+            name="profiletype",
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+        ),
+        nullable=False,
+        default=ProfileType.INDIVIDUAL,
+        server_default=ProfileType.INDIVIDUAL.value,
+    )
+    display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    profession: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    website: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    logo: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
+    biography: Mapped[str | None] = mapped_column(Text, nullable=True)
+    profile_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+    profile_owner = relationship("User", back_populates="profile")
+
+    def _set_content(self, html_str):
+        allowed_tags = [
+            'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+            'p', 'ul', 'ol', 'li', 'br',
+            'strong', 'em', 'a', 'span',
+            'div', 'img', 'table', 'tr', 'td'
+        ]
+        self.biography = bleach.clean(html_str, tags=allowed_tags)
+
+    def get_biography(self):
+        return self.biography
+
+    def get_profile_data_value(self, key: str, default=None):
+        return self.profile_data.get(key, default) if self.profile_data else default
+
+    @property
+    def image_path(self) -> str:
+        if self.logo:
+            return f"/media/profile_imgs/{self.logo}"
+        return "/static/profile_pics/default.jpg"
+    
+
+
+
+    # ROles should be editeble form here.
 
 #     """An sqlalchemy model for each user or person producing dirt, 
 #     the are the pones who produce waste. e.g, restuarant, shop, bar.
@@ -189,3 +362,4 @@ class Pickup(Base):
 #     pass
 
 # class 
+

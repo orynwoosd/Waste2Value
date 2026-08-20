@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, status, Depends, HTTPException, File, UploadFile
+from fastapi import Form, Body
 from database import engine, get_db
 from schemas import (
     UserPrivateResponse, CreateUserValidation,
@@ -16,8 +17,7 @@ from config import settings
 from fastapi.responses import JSONResponse
 from dependecies import CurrentUser, required_permission_level
 from fastapi.middleware.cors import CORSMiddleware
-from forms import AddressForm
-from forms import PickupForm
+from forms import AddressForm, ProfileForm, PickupForm, PickupUpdateForm
 from PIL import UnidentifiedImageError
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -27,9 +27,16 @@ from schemas import (
     CreatePickupValidation,
     PickupResponse,
     WasteCategoryResponse,
-    WasteResponse
+    WasteResponse,
+    UserProfileResponse
+)
+from schemas import (
+    RoleChangeRequestCreate,
+    RoleChangeRequestResponse,
+    AuditLogResponse,
 )
 from datetime import date as _date
+from datetime import datetime
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -101,6 +108,7 @@ async def register_user(user_info: CreateUserValidation, db: Annotated[AsyncSess
         phonenumber=user_info.phonenumber
 
     )
+    new_user.create_profile()
 
     db.add(new_user)
     await db.commit()
@@ -315,6 +323,125 @@ async def list_waste(db: Annotated[AsyncSession, Depends(get_db)]):
     wastes = result.scalars().all()
     return wastes
 
+
+@app.post("/role-requests", response_model=RoleChangeRequestResponse, status_code=status.HTTP_201_CREATED)
+async def create_role_request(
+    current_user: CurrentUser,
+     db: Annotated[AsyncSession, Depends(get_db)],
+    requested_role: str = Form(...),
+    file: UploadFile | None = File(None)   
+):
+    """Create a role change request. Users cannot self-assign roles.
+
+    Optionally accepts a supporting document upload.
+    """
+    # Validate requested role
+    try:
+        # Accept either numeric or name values
+        if requested_role.isdigit():
+            requested_role_val = models.UserRole(int(requested_role))
+        else:
+            requested_role_val = models.UserRole[requested_role]
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid requested role")
+
+    # Prevent downgrades or self-assignment of equal/higher privileges
+    if requested_role_val.value <= current_user.role.value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Requested role must be higher than current role")
+
+    # Ensure there is no existing pending request
+    result = await db.execute(
+        select(models.RoleChangeRequest).where(
+            models.RoleChangeRequest.user_id == current_user.id,
+            models.RoleChangeRequest.status == models.RoleRequestStatus.PENDING,
+        )
+    )
+    existing = result.scalars().first()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You already have a pending role request")
+
+    document_filename = None
+    if file is not None:
+        file_content = await file.read()
+        if len(file_content) > settings.max_upload_file_size_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File too large")
+        # reuse existing image processing path; documents will be saved as images if provided
+        document_filename = await run_in_threadpool(process_image, file_content, "id")
+
+    new_req = models.RoleChangeRequest(
+        user_id=current_user.id,
+        requested_role=requested_role_val,
+        status=models.RoleRequestStatus.PENDING,
+        document_filename=document_filename,
+    )
+    db.add(new_req)
+    await db.commit()
+    await db.refresh(new_req)
+
+    return new_req
+
+
+@app.get("/admin/role-requests", response_model=List[RoleChangeRequestResponse])
+async def list_role_requests(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    # current_user: CurrentUser
+
+    current_user: Annotated[models.User, Depends(required_permission_level(models.UserRole.SUPER_USER.value))],
+):
+    """Admin-only view of pending role requests."""
+    result = await db.execute(
+        select(models.RoleChangeRequest).options(joinedload(models.RoleChangeRequest.user)).where(models.RoleChangeRequest.status == models.RoleRequestStatus.PENDING)
+    )
+    rows = result.scalars().all()
+    return rows
+
+
+@app.patch("/admin/role-requests/{request_id}", response_model=RoleChangeRequestResponse)
+async def review_role_request(
+    request_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[models.User, Depends(required_permission_level(models.UserRole.SUPER_USER.value))],
+    action: str = Body(...),
+    admin_notes: str | None = Body(None),
+):
+    """Approve or reject a pending role change request (admin only)."""
+    result = await db.execute(select(models.RoleChangeRequest).where(models.RoleChangeRequest.id == request_id))
+    req = result.scalars().first()
+    if not req:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role request not found")
+    if req.status != models.RoleRequestStatus.PENDING:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request already reviewed")
+
+    # Apply the chosen action
+    if action.lower() == "approve":
+        # update user role and mark request approved
+        user_result = await db.execute(select(models.User).where(models.User.id == req.user_id))
+        user = user_result.scalars().first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Requesting user not found")
+        user.role = req.requested_role
+        req.status = models.RoleRequestStatus.APPROVED
+        req.admin_id = current_user.id
+        req.admin_notes = admin_notes
+        req.reviewed_at = datetime.utcnow()
+
+        log = models.AuditLog(actor_id=current_user.id, target_user_id=user.id, action="ROLE_APPROVED", details=admin_notes)
+        db.add(log)
+
+    elif action.lower() == "reject":
+        req.status = models.RoleRequestStatus.REJECTED
+        req.admin_id = current_user.id
+        req.admin_notes = admin_notes
+        req.reviewed_at = datetime.utcnow()
+        log = models.AuditLog(actor_id=current_user.id, target_user_id=req.user_id, action="ROLE_REJECTED", details=admin_notes)
+        db.add(log)
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action; use 'approve' or 'reject'")
+
+    await db.commit()
+    await db.refresh(req)
+    return req
+
 @app.get("/pickups", response_model=List[PickupResponse], status_code=status.HTTP_200_OK)
 async def get_pickups(db: Annotated[AsyncSession, Depends(get_db)]):
     """Get all schedulled pickups."""
@@ -404,6 +531,223 @@ async def create_pickup(
 
     return pickup_with_rels
 
+
+@app.patch("/pickups/{pickup_id}", response_model=PickupResponse, status_code=status.HTTP_200_OK)
+async def update_pickup(
+    pickup_id: int,
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    form: PickupUpdateForm = Depends(PickupUpdateForm.as_form),
+    file: UploadFile | None = File(None),
+):
+    """Update fields on a pickup that is still awaiting collection."""
+    result = await db.execute(
+        select(models.Pickup)
+        .options(joinedload(models.Pickup.waste).joinedload(models.Waste.category))
+        .where(models.Pickup.id == pickup_id)
+    )
+    pickup = result.scalars().first()
+
+    if not pickup:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pickup not found")
+    if pickup.requester_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    if pickup.status != models.PickUpStatus.CREATED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only newly created pickups can be updated",
+        )
+
+    update_values = form.model_dump(exclude_unset=True)
+
+    if "category_id" in update_values:
+        category_value = update_values["category_id"]
+        category = None
+        if isinstance(category_value, int) or (
+            isinstance(category_value, str) and category_value.isdigit()
+        ):
+            category = (await db.execute(
+                select(models.WasteCategory).where(
+                    models.WasteCategory.id == int(category_value)
+                )
+            )).scalars().first()
+        if category is None and isinstance(category_value, str):
+            category = (await db.execute(
+                select(models.WasteCategory).where(
+                    func.lower(models.WasteCategory.name) == category_value.lower()
+                )
+            )).scalars().first()
+        if category is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid category")
+        print(category)
+        pickup.waste.category_id = category.id
+
+    if "pickup_date" in update_values:
+        pickup.pickup_date = update_values["pickup_date"]
+    if "time_slot" in update_values:
+        try:
+            pickup.time_slot = models.PickupTimeSlot(update_values["time_slot"])
+        except ValueError as err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid time slot") from err
+
+    old_image = pickup.image_file
+    if file is not None:
+        file_content = await file.read()
+        if len(file_content) > settings.max_upload_file_size_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File too large")
+        try:
+            pickup.image_file = await run_in_threadpool(process_image, file_content, "pk")
+        except UnidentifiedImageError as err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image file") from err
+
+    await db.commit()
+    await db.refresh(pickup)
+    if file is not None and old_image:
+        delete_img(old_image, "pk")
+
+    result = await db.execute(
+        select(models.Pickup)
+        .options(joinedload(models.Pickup.waste).joinedload(models.Waste.category))
+        .where(models.Pickup.id == pickup_id)
+    )
+    return result.scalars().first()
+
+
+@app.delete("/pickups/{pickup_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_pickup(
+    pickup_id: int,
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Delete an owned pickup that has not entered collection processing."""
+    result = await db.execute(
+        select(models.Pickup).where(models.Pickup.id == pickup_id)
+    )
+    pickup = result.scalars().first()
+
+    if not pickup:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pickup not found")
+    if pickup.requester_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    if pickup.status != models.PickUpStatus.CREATED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only newly created pickups can be deleted",
+        )
+
+    old_image = pickup.image_file
+    waste_result = await db.execute(
+        select(func.count(models.Pickup.id)).where(models.Pickup.waste_id == pickup.waste_id)
+    )
+    is_only_pickup = waste_result.scalar_one() == 1
+    waste = None
+    if is_only_pickup:
+        waste = await db.get(models.Waste, pickup.waste_id)
+
+    await db.delete(pickup)
+    if waste is not None:
+        await db.delete(waste)
+    await db.commit()
+
+    if old_image:
+        delete_img(old_image, "pk")
+
+
+@app.get("/profiles", response_model=list[UserProfileResponse], status_code=status.HTTP_200_OK)
+async def get_all_profiles(
+    current_user: Annotated[models.User, Depends(required_permission_level(UserRole.SUPER_USER.value))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+
+    ):
+    result = await db.execute(
+        select(models.Profile).options(joinedload(models.Profile.profile_owner))
+    )
+
+    profiles = result.scalars().all()
+    return profiles
+
+
+@app.get("/profiles/{profile_id}", response_model=UserProfileResponse, status_code=status.HTTP_200_OK)
+async def get_user_profile(db: Annotated[AsyncSession, Depends(get_db)], profile_id: int):
+    result = await db.execute(
+        select(models.Profile).where(models.Profile.id == profile_id).options(joinedload(models.Profile.profile_owner))
+        )
+    user_profile = result.scalars().first()
+
+    if not user_profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Profile Not found"
+        )
+    return user_profile
+
+@app.patch("/profiles/{profile_id}", response_model=UserProfileResponse, status_code=status.HTTP_200_OK)
+async def update_user_profile(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    profile_id: int,
+    logo: UploadFile | None = File(None),
+    form: ProfileForm = Depends(ProfileForm.as_form),
+):
+    result = await db.execute(
+        select(models.Profile).where(models.Profile.id == profile_id)
+    )
+    user_profile = result.scalars().first()
+
+    if not user_profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Profile not found",
+        )
+
+    old_image = user_profile.logo
+    if logo is not None:
+        file_content = await logo.read()
+        if len(file_content) > settings.max_upload_file_size_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail="File to large"
+            )
+        try: 
+            filename = await run_in_threadpool(process_image, file_content, "lg")
+        except UnidentifiedImageError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image file") from e
+
+        user_profile.logo = filename
+
+
+    for field, value in form.model_dump(exclude_unset=True).items():
+        setattr(user_profile, field, value)
+
+    await db.commit()
+    await db.refresh(user_profile)
+
+    if logo is not None and old_image:
+            delete_img(old_image, "lg")
+    return user_profile
+
+@app.delete("/profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_profile(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[models.User, Depends(required_permission_level(UserRole.SUPER_USER.value))],
+    profile_id: int
+    ):
+
+    result = await db.execute(
+        select(models.Profile).where(models.Profile.id == profile_id) 
+    )
+
+    profile = result.scalars().first()
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Profile not found"
+        )
+
+    await db.delete(profile)
+    await db.commit()
+
+    if profile.logo:
+        delete_img(profile.logo, "lg")
 
 @app.post("/token")
 async def login_for_token(

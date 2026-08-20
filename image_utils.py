@@ -6,12 +6,16 @@ from PIL import Image, ImageOps
 
 PROFILE_PICS_DIR = Path("media/profile_imgs")
 LANDMARK_PICS_DIR = Path("media/landmark_imgs")
-LANDMARK_PICS_DIR = Path("media/pickup_imgs")
+PICKUP_PICS_DIR = Path("media/pickup_imgs")
+IDENTITY_PICS_DIR = Path("media/identity_imgs")
+LOGO_PICS_DIR = Path("media/logo_imgs")
 
 CHOSEN_PATH = {
     "pf": {"dir": PROFILE_PICS_DIR, "dimension": (300, 300)},
     "lm": {"dir": LANDMARK_PICS_DIR, "dimension": (800, 600)},
-    "pk": {"dir": LANDMARK_PICS_DIR, "dimension": (800, 600)}
+    "pk": {"dir": PICKUP_PICS_DIR, "dimension": (800, 600)},
+    "id": {"dir": IDENTITY_PICS_DIR, "dimension": (800, 600)},
+    "lg": {"dir": LOGO_PICS_DIR, "dimension": (300,300)},
 }
 # Image processing
 def process_image(content: bytes, type: str) -> str:
@@ -36,7 +40,7 @@ def process_image(content: bytes, type: str) -> str:
 # Delete file
 
 def delete_img(filename: str | None, type: str) -> None:
-    choice = CHOSEN_PATH['type']
+    choice = CHOSEN_PATH[type]
     if filename is None:
         return 
     filepath = choice["dir"] / filename
