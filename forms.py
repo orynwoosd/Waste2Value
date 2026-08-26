@@ -7,15 +7,19 @@ class AddressForm(BaseModel):
     quater: str = Field(max_length=100)
     street_address: str | None = Field(max_length=100, default=None)
     nearest_landmark: str | None = Field(max_length=100, default=None)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
 
 
     @classmethod
     def as_form(
         cls, quater: str = Form(...), 
         street_address: str | None = Form(None),
-        nearest_landmark: str | None = Form(None)
+        nearest_landmark: str | None = Form(None),
+        latitude: float | None = Form(None),
+        longitude: float | None = Form(None),
         ):
-        return cls(quater=quater, street_address=street_address, nearest_landmark=nearest_landmark)
+        return cls(quater=quater, street_address=street_address, nearest_landmark=nearest_landmark, latitude=latitude, longitude=longitude)
 
 
 class PickupForm(BaseModel):
@@ -29,6 +33,8 @@ class PickupForm(BaseModel):
     category_id: int | str
     pickup_date: datetime
     time_slot: str
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
 
     @classmethod
     def as_form(
@@ -36,10 +42,12 @@ class PickupForm(BaseModel):
         category_id: str = Form(...),
         pickup_date: datetime = Form(...),
         time_slot: str = Form(...),
+        latitude: float | None = Form(None),
+        longitude: float | None = Form(None),
     ):
         # HTML form values are strings; accept them and let the
         # endpoint interpret whether it's a numeric id or a name.
-        return cls(category_id=category_id, pickup_date=pickup_date, time_slot=time_slot)
+        return cls(category_id=category_id, pickup_date=pickup_date, time_slot=time_slot, latitude=latitude, longitude=longitude)
 
 
 class PickupUpdateForm(BaseModel):
@@ -48,6 +56,8 @@ class PickupUpdateForm(BaseModel):
     category_id: int | str | None = Field(default=None)
     pickup_date: date | None = Field(default=None)
     time_slot: str | None = Field(default=None)
+    latitude: float | None = Field(default=None)
+    longitude: float | None = Field(default=None)
 
     @classmethod
     def as_form(
@@ -55,6 +65,9 @@ class PickupUpdateForm(BaseModel):
         category_id: str | None = Form(None),
         pickup_date: date | None = Form(None),
         time_slot: str | None = Form(None),
+        longitude: float | None = Form(None),
+        latitude: float | None = Form(None)
+
     ):
         values = {
             key: value
@@ -62,6 +75,8 @@ class PickupUpdateForm(BaseModel):
                 "category_id": category_id,
                 "pickup_date": pickup_date,
                 "time_slot": time_slot,
+                "longitude": longitude,
+                "latitude": latitude,
             }.items()
             if value is not None and value != ""
         }

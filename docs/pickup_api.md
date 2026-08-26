@@ -16,6 +16,10 @@ Form fields (all required unless indicated):
   - A category name string (case-insensitive), e.g. `Biodegradable`, `Non-Biodegradable`, `Mixed Waste`.
 - `pickup_date` — ISO date string `YYYY-MM-DD`.
 - `time_slot` — String identifying the time slot, e.g. `Morning`, `Midday`, `Evening`.
+- `latitude` — Optional pickup latitude. If omitted, the coordinates from the
+  user's saved address are used.
+- `longitude` — Optional pickup longitude. Must be sent together with
+  `latitude`.
 
 Response: JSON representation of the created `Pickup` (see application responses).
 
@@ -52,6 +56,24 @@ curl -v \
 - If you prefer numeric ids, the endpoint still accepts them.
 - Keep category labels matching the seeded names (`Biodegradable`,
   `Non-Biodegradable`, `Mixed Waste`) to ensure correct lookup.
+
+## Collector location check-in
+
+Collectors use their last check-in location for simple nearest-collector
+assignment. This does not track them continuously. `ADMIN` users can update
+their location and availability with:
+
+```bash
+curl -X PATCH \
+  -H "Content-Type: application/json" \
+  -b 'access_token=<your_access_cookie>' \
+  -d '{"latitude": 4.0511, "longitude": 9.7679, "is_available": true}' \
+  http://localhost:8000/collectors/me/location
+```
+
+Only locations updated within the last 30 minutes are considered for new
+pickup assignments. If no recent available collector has coordinates, the
+pickup remains unassigned (`courier_id` is `null`).
 
 ## Local testing helper
 

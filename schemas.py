@@ -68,11 +68,19 @@ class UpdateUser(BaseModel):
     phonenumber: str | None = Field(default=None, max_length=20, min_length=9)
 
 
+class CollectorLocationUpdate(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    is_available: bool = True
+
+
 class AddressResponse(BaseModel):
     id: int
     quater: str
     street_address: str | None
     nearest_landmark: str | None
+    latitude: float | None
+    longitude: float | None
     inhabitant: UserPrivateResponse
 
     model_config = ConfigDict(from_attributes=True)
@@ -122,6 +130,8 @@ class PickupResponse(BaseModel):
     image_file: str | None
     created_at: datetime
     pickup_id: uuid.UUID
+    latitude: float | None
+    longitude: float | None
     
 
 

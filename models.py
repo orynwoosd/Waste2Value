@@ -1,6 +1,6 @@
 from typing import Any
 from sqlalchemy.orm import mapped_column, Mapped, relationship
-from sqlalchemy import Date, String, Integer, text, ForeignKey, Enum as DBEnum, Text, JSON
+from sqlalchemy import Date, String, Integer, text, ForeignKey, Enum as DBEnum, Text, JSON, Float, Boolean
 from datetime import date, datetime
 from enum import Enum
 from sqlalchemy.sql.sqltypes import TIMESTAMP
@@ -29,12 +29,17 @@ class User(Base):
     password: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text('now()'), nullable=False)
     image_file: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
+    last_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    location_updated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    is_available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     address_data = relationship("AddressData", back_populates="inhabitant")
     role: Mapped[UserRole] = mapped_column(
         DBEnum(UserRole, name="userrole"),
         default=UserRole.REGULAR,
         server_default=UserRole.REGULAR.name,
     )
+    
 
     # Relationship to wastes produced by this user
     wastes: Mapped[list["Waste"]] = relationship(
@@ -107,6 +112,9 @@ class AddressData(Base):
     inhabitant_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     inhabitant = relationship(User, back_populates="address_data")
     image_file: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
+
+    longitude: Mapped[float] = mapped_column(Float, nullable=True)
+    latitude: Mapped[float] = mapped_column(Float, nullable=True)
 
 
     @property
@@ -210,6 +218,9 @@ class Pickup(Base):
     courier: Mapped["User"]  = relationship(
         foreign_keys=[courier_id], back_populates="courier_orders"
     )
+
+    longitude: Mapped[float] = mapped_column(Float, nullable=True)
+    latitude: Mapped[float] = mapped_column(Float, nullable=True)
 
     @property
     def image_path(self) -> str:

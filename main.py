@@ -37,6 +37,9 @@ from schemas import (
 )
 from datetime import date as _date
 from datetime import datetime
+from datetime import timezone, timedelta
+from math import radians, sin, cos, asin, sqrt
+from schemas import CollectorLocationUpdate
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -59,8 +62,50 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/media", StaticFiles(directory="media"), name="media")
-@app.get("/")
 
+
+def _distance_km(latitude_a: float, longitude_a: float, latitude_b: float, longitude_b: float) -> float:
+    earth_radius_km = 6371.0
+    delta_latitude = radians(latitude_b - latitude_a)
+    delta_longitude = radians(longitude_b - longitude_a)
+    value = sin(delta_latitude / 2) ** 2 + cos(radians(latitude_a)) * cos(radians(latitude_b)) * sin(delta_longitude / 2) ** 2
+    return 2 * earth_radius_km * asin(sqrt(min(1.0, value)))
+
+
+async def _nearest_collector(db: AsyncSession, latitude: float | None, longitude: float | None, requester_id: int):
+    if latitude is None or longitude is None:
+        return None
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+    result = await db.execute(
+        select(
+            models.User.id,
+            models.User.last_latitude,
+            models.User.last_longitude,
+        ).where(
+            models.User.id != requester_id,
+            models.User.role == UserRole.ADMIN.name,
+            models.User.is_available.is_(True),
+            models.User.last_latitude.is_not(None),
+            models.User.last_longitude.is_not(None),
+            models.User.location_updated_at >= cutoff,
+        )
+    )
+    collectors = result.mappings().all()
+    nearest = min(
+        collectors,
+        key=lambda collector: _distance_km(
+            latitude,
+            longitude,
+            collector["last_latitude"],
+            collector["last_longitude"],
+        ),
+        default=None,
+    )
+    return nearest["id"] if nearest else None
+
+
+@app.get("/")
 async def home():
     return {"WLCM": "wlcm"}
 
@@ -188,6 +233,20 @@ async def add_user_address(
 
     # only register page has been built so nothing 
     return user_new_address
+
+
+@app.patch("/collectors/me/location")
+async def update_collector_location(
+    location: CollectorLocationUpdate,
+    current_user: Annotated[models.User, Depends(required_permission_level(UserRole.ADMIN.value))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    current_user.last_latitude = location.latitude
+    current_user.last_longitude = location.longitude
+    current_user.location_updated_at = datetime.now(timezone.utc)
+    current_user.is_available = location.is_available
+    await db.commit()
+    return {"message": "Collector location updated", "is_available": current_user.is_available}
     
 
 @app.patch("/users/{user_id}", response_model=UserPrivateResponse)
@@ -405,7 +464,10 @@ async def review_role_request(
     admin_notes: str | None = Body(None),
 ):
     """Approve or reject a pending role change request (admin only)."""
-    result = await db.execute(select(models.RoleChangeRequest).where(models.RoleChangeRequest.id == request_id))
+    result = await db.execute(select(models.RoleChangeRequest).options(
+        joinedload(models.RoleChangeRequest.admin),
+        joinedload(models.RoleChangeRequest.user)
+        ).where(models.RoleChangeRequest.id == request_id))
     req = result.scalars().first()
     if not req:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role request not found")
@@ -503,14 +565,34 @@ async def create_pickup(
         except UnidentifiedImageError as err:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image file") from err
 
+    pickup_latitude = form.latitude
+    pickup_longitude = form.longitude
+    if pickup_latitude is None and pickup_longitude is None:
+        address_result = await db.execute(
+            select(models.AddressData).where(models.AddressData.inhabitant_id == current_user.id)
+        )
+        saved_address = address_result.scalars().first()
+        if saved_address:
+            pickup_latitude = saved_address.latitude
+            pickup_longitude = saved_address.longitude
+
+    if (pickup_latitude is None) != (pickup_longitude is None):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Latitude and longitude must be provided together")
+
+    assigned_courier = await _nearest_collector(
+        db, pickup_latitude, pickup_longitude, current_user.id
+    )
     # create pickup record
     pickup = models.Pickup(
         waste_id=new_waste.id,
         requester_id=current_user.id,
-        courier_id=None,
+        courier_id=assigned_courier,
         pickup_date=_date.fromisoformat(form.pickup_date) if isinstance(form.pickup_date, str) else form.pickup_date,
         time_slot=models.PickupTimeSlot(form.time_slot),
         image_file=image_filename,
+        latitude=pickup_latitude,
+        longitude=pickup_longitude,
+        status=models.PickUpStatus.PENDING.value if assigned_courier else models.PickUpStatus.CREATED.value,
     )
     db.add(pickup)
     await db.commit()
@@ -552,7 +634,7 @@ async def update_pickup(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pickup not found")
     if pickup.requester_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
-    if pickup.status != models.PickUpStatus.CREATED.value:
+    if pickup.status in  (models.PickUpStatus.CREATED.value, models.PickUpStatus.PENDING.value,):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Only newly created pickups can be updated",
@@ -600,6 +682,12 @@ async def update_pickup(
         except UnidentifiedImageError as err:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image file") from err
 
+    if "longitude" in update_values:
+        pickup.longitude = update_values["longitude"]
+
+    if "latitude" in update_values:
+        pickup.latitude = update_values["latitude"]
+        
     await db.commit()
     await db.refresh(pickup)
     if file is not None and old_image:

@@ -9,6 +9,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "bleach>=6.4.0",
     "fastapi[standard]>=0.139.2",
+    "geoalchemy2>=0.20.0",
     "pillow>=12.3.0",
     "psycopg[binary]>=3.3.4",
     "pwdlib[argon2]>=0.3.0",
